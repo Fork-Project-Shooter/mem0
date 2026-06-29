@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mem0-local": {
+      "command": "D:\\Projects\\mem0\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\Projects\\mem0\\integrations\\mem0-local\\mcp-server\\server.py"],
+      "env": {
+        "FASTEMBED_CACHE_PATH": "C:\\Users\\Administrator\\.cache\\fastembed",
+        "HF_HUB_OFFLINE": "1"
+      }
+    }
+  }
+}

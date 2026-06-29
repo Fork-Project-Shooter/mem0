@@ -1,0 +1,2 @@
+mem0ai[extras]
+mcp[cli]>=1.25.4
