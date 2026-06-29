@@ -1,13 +1,27 @@
 import json
+import os
 from typing import Any, Dict, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from mem0_adapter import DEFAULT_USER_ID, LocalMem0Adapter
 
 
 adapter = LocalMem0Adapter()
-mcp = FastMCP("mem0-local")
+MCP_HOST = os.getenv("MEM0_LOCAL_MCP_HOST", "127.0.0.1")
+MCP_PORT = int(os.getenv("MEM0_LOCAL_MCP_PORT", "8000"))
+MCP_PATH = os.getenv("MEM0_LOCAL_MCP_PATH", "/mcp")
+MCP_TRANSPORT = os.getenv("MEM0_LOCAL_MCP_TRANSPORT", "stdio")
+MCP_PUBLIC = os.getenv("MEM0_LOCAL_MCP_PUBLIC", "false").lower() in {"1", "true", "yes"}
+
+mcp = FastMCP(
+    "mem0-local",
+    host=MCP_HOST,
+    port=MCP_PORT,
+    streamable_http_path=MCP_PATH,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=not MCP_PUBLIC),
+)
 
 
 def _json(value: Any) -> str:
@@ -75,4 +89,4 @@ def memory_health() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport=MCP_TRANSPORT)
