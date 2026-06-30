@@ -1,6 +1,4 @@
-import json
 import logging
-import os
 from typing import List
 
 from app.utils.prompts import MEMORY_CATEGORIZATION_PROMPT
@@ -10,12 +8,7 @@ from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 load_dotenv()
-
-# Use DeepSeek via OpenAI-compatible API
-openai_client = OpenAI(
-    api_key=os.getenv("LLM_API_KEY"),
-    base_url="https://api.deepseek.com"
-)
+openai_client = OpenAI()
 
 
 class MemoryCategories(BaseModel):
@@ -30,15 +23,15 @@ def get_categories_for_memory(memory: str) -> List[str]:
             {"role": "user", "content": memory}
         ]
 
-        completion = openai_client.chat.completions.create(
-            model=os.getenv("LLM_MODEL", "deepseek-chat"),
+        # Let OpenAI handle the pydantic parsing directly
+        completion = openai_client.beta.chat.completions.parse(
+            model="gpt-4o-mini",
             messages=messages,
-            response_format={"type": "json_object"},
+            response_format=MemoryCategories,
             temperature=0
         )
 
-        raw = completion.choices[0].message.content
-        parsed = MemoryCategories.model_validate_json(raw)
+        parsed: MemoryCategories = completion.choices[0].message.parsed
         return [cat.strip().lower() for cat in parsed.categories]
 
     except Exception as e:

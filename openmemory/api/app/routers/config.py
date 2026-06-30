@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, Optional
 
 from app.database import get_db
@@ -47,30 +48,53 @@ class ConfigSchema(BaseModel):
     mem0: Optional[Mem0Config] = None
 
 def get_default_configuration():
-    """Get the default configuration with sensible defaults for LLM and embedder."""
+    """Get default configuration from the deployment environment."""
+    llm_provider = os.environ.get("LLM_PROVIDER", "openai").lower()
+    llm_model = os.environ.get("LLM_MODEL") or ("llama3.1:latest" if llm_provider == "ollama" else "gpt-4o-mini")
+    llm_api_key_ref = "env:LLM_API_KEY" if os.environ.get("LLM_API_KEY") else "env:OPENAI_API_KEY"
+    llm_config = {
+        "model": llm_model,
+        "temperature": 0.1,
+        "max_tokens": 2000,
+    }
+    if llm_provider == "ollama":
+        llm_config["ollama_base_url"] = os.environ.get("OLLAMA_BASE_URL") or os.environ.get("LLM_BASE_URL") or "http://localhost:11434"
+    else:
+        llm_config["api_key"] = llm_api_key_ref
+
+    embedder_provider = os.environ.get("EMBEDDER_PROVIDER", llm_provider if llm_provider == "ollama" else "openai").lower()
+    embedder_model = os.environ.get("EMBEDDER_MODEL") or ("nomic-embed-text" if embedder_provider == "ollama" else "text-embedding-3-small")
+    embedder_config = {"model": embedder_model}
+    if embedder_provider == "ollama":
+        embedder_config["ollama_base_url"] = os.environ.get("OLLAMA_BASE_URL") or os.environ.get("EMBEDDER_BASE_URL") or "http://localhost:11434"
+    elif embedder_provider in {"openai", "anthropic", "groq", "together", "deepseek"}:
+        embedder_config["api_key"] = "env:EMBEDDER_API_KEY" if os.environ.get("EMBEDDER_API_KEY") else llm_api_key_ref
+
+    vector_store_config = {
+        "collection_name": "openmemory",
+        "host": os.environ.get("QDRANT_HOST", "mem0_store"),
+        "port": int(os.environ.get("QDRANT_PORT", "6333")),
+        "embedding_model_dims": int(os.environ.get("EMBEDDER_DIMS", "1536")),
+    }
+
     return {
         "openmemory": {
             "custom_instructions": None
         },
         "mem0": {
             "llm": {
-                "provider": "openai",
-                "config": {
-                    "model": "gpt-4o-mini",
-                    "temperature": 0.1,
-                    "max_tokens": 2000,
-                    "api_key": "env:OPENAI_API_KEY"
-                }
+                "provider": llm_provider,
+                "config": llm_config,
             },
             "embedder": {
-                "provider": "openai",
-                "config": {
-                    "model": "text-embedding-3-small",
-                    "api_key": "env:OPENAI_API_KEY"
-                }
+                "provider": embedder_provider,
+                "config": embedder_config,
             },
-            "vector_store": None
-        }
+            "vector_store": {
+                "provider": "qdrant",
+                "config": vector_store_config,
+            },
+        },
     }
 
 def get_config_from_db(db: Session, key: str = "main"):

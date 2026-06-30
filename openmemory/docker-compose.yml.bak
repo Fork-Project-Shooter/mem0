@@ -1,18 +1,16 @@
 services:
   mem0_store:
     image: qdrant/qdrant
-    restart: always
     ports:
-      - "127.0.0.1:6333:6333"
+      - "6333:6333"
     volumes:
-      - mem0_storage:/qdrant/storage
+      - mem0_storage:/mem0/storage
   openmemory-mcp:
     image: mem0/openmemory-mcp
     build: api/
-    restart: always
     environment:
-      USER: ${NEXT_PUBLIC_USER_ID:-codex}
-      API_KEY: ${API_KEY:-}
+      - USER
+      - API_KEY
     env_file:
       - api/.env
     depends_on:
@@ -22,18 +20,17 @@ services:
     volumes:
       - ./api:/usr/src/openmemory
     command: >
-      sh -c "uvicorn main:app --host 0.0.0.0 --port 8765 --workers 1"
+      sh -c "uvicorn main:app --host 0.0.0.0 --port 8765 --reload --workers 4"
   openmemory-ui:
     build:
       context: ui/
       dockerfile: Dockerfile
     image: mem0/openmemory-ui:latest
-    restart: always
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-      NEXT_PUBLIC_USER_ID: ${NEXT_PUBLIC_USER_ID:-codex}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_USER_ID=${USER}
 
 volumes:
   mem0_storage:
