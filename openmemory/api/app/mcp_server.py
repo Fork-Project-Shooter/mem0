@@ -19,6 +19,7 @@ import contextvars
 import datetime
 import json
 import logging
+import re
 import uuid
 
 import anyio
@@ -55,14 +56,52 @@ def get_memory_client_safe():
 user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("user_id")
 client_name_var: contextvars.ContextVar[str] = contextvars.ContextVar("client_name")
 
+_MEMORY_METADATA_RE = re.compile(
+    r"(?mi)^(scope|type|domain):\s*([^\r\n]+?)\s*$"
+)
+_PROJECT_SCOPE_RE = re.compile(r"(project:[A-Za-z0-9_.-]+)")
+_STRUCTURED_MEMORY_FIELDS = ("scope", "type", "domain")
+
+
+def _extract_memory_metadata(text: str) -> dict[str, str]:
+    """Extract supported metadata fields from a verbatim memory body."""
+    metadata: dict[str, str] = {}
+    for key, value in _MEMORY_METADATA_RE.findall(text or ""):
+        cleaned = value.strip()
+        if cleaned:
+            metadata[key.lower()] = cleaned
+    return metadata
+
+
+def _resolve_search_scope(query: str, scope: str | None) -> str | None:
+    """Prefer an explicit scope, otherwise infer project:<repo> from the query."""
+    if scope and scope.strip():
+        return scope.strip()
+    match = _PROJECT_SCOPE_RE.search(query or "")
+    return match.group(1) if match else None
+
+
+def _clean_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 # Create a router for MCP endpoints
 mcp_router = APIRouter(prefix="/mcp")
 
 # Initialize SSE transport
 sse = SseServerTransport("/mcp/messages/")
 
-@mcp.tool(description="Add a new memory. This method is called everytime the user informs anything about themselves, their preferences, or anything that has any relevant information which can be useful in the future conversation. This can also be called when the user asks you to remember something. Set infer to False to store the memory verbatim without LLM fact extraction.")
-async def add_memories(text: str, infer: bool = True) -> str:
+@mcp.tool(description="Add a new memory. Pass scope/type/domain so projects can be isolated during retrieval. When omitted, these fields are extracted from a verbatim metadata block in text. Set infer to False to store the memory verbatim without LLM fact extraction.")
+async def add_memories(
+    text: str,
+    infer: bool = True,
+    scope: str | None = None,
+    memory_type: str | None = None,
+    domain: str | None = None,
+) -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
 
@@ -86,12 +125,23 @@ async def add_memories(text: str, infer: bool = True) -> str:
             if not app.is_active:
                 return f"Error: App {app.name} is currently paused on OpenMemory. Cannot create new memories."
 
+            structured_metadata = _extract_memory_metadata(text)
+            explicit_metadata = {
+                "scope": _clean_optional(scope),
+                "type": _clean_optional(memory_type),
+                "domain": _clean_optional(domain),
+            }
+            structured_metadata.update({
+                key: value for key, value in explicit_metadata.items() if value
+            })
+            vector_metadata = {
+                "source_app": "openmemory",
+                "mcp_client": client_name,
+                **structured_metadata,
+            }
             response = memory_client.add(text,
                                          user_id=uid,
-                                         metadata={
-                                            "source_app": "openmemory",
-                                            "mcp_client": client_name,
-                                         },
+                                         metadata=vector_metadata,
                                          infer=infer)
 
             # Process the response and update database
@@ -107,12 +157,14 @@ async def add_memories(text: str, infer: bool = True) -> str:
                                 user_id=user.id,
                                 app_id=app.id,
                                 content=result['memory'],
+                                metadata_=structured_metadata,
                                 state=MemoryState.active
                             )
                             db.add(memory)
                         else:
                             memory.state = MemoryState.active
                             memory.content = result['memory']
+                            memory.metadata_ = structured_metadata
 
                         # Create history entry
                         history = MemoryStatusHistory(
@@ -146,8 +198,15 @@ async def add_memories(text: str, infer: bool = True) -> str:
         return f"Error adding to memory: {e}"
 
 
-@mcp.tool(description="Search through stored memories. This method is called EVERYTIME the user asks anything.")
-async def search_memory(query: str) -> str:
+@mcp.tool(description="Search stored memories with optional project scope, type, domain, result limit, and minimum similarity. If scope is omitted, project:<repo> is inferred from the query when present.")
+async def search_memory(
+    query: str,
+    scope: str | None = None,
+    memory_type: str | None = None,
+    domain: str | None = None,
+    limit: int = 3,
+    min_score: float = 0.45,
+) -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
     if not uid:
@@ -166,32 +225,60 @@ async def search_memory(query: str) -> str:
             # Get or create user and app
             user, app = get_user_and_app(db, user_id=uid, app_id=client_name)
 
+            resolved_scope = _resolve_search_scope(query, scope)
+            resolved_type = _clean_optional(memory_type)
+            resolved_domain = _clean_optional(domain)
+            result_limit = max(1, min(int(limit), 10))
+            score_floor = max(-1.0, min(float(min_score), 1.0))
+
             # Get accessible memory IDs based on ACL
             user_memories = db.query(Memory).filter(Memory.user_id == user.id).all()
             accessible_memory_ids = [memory.id for memory in user_memories if check_memory_access_permissions(db, memory, app.id)]
+            allowed = set(str(mid) for mid in accessible_memory_ids)
+            if not allowed:
+                return json.dumps({"results": []}, indent=2)
 
             filters = {
                 "user_id": uid
             }
+            if resolved_scope:
+                filters["scope"] = resolved_scope
+            if resolved_type:
+                filters["type"] = resolved_type
+            if resolved_domain:
+                filters["domain"] = resolved_domain
 
             embeddings = memory_client.embedding_model.embed(query, "search")
 
+            # Fetch a small surplus so ACL/score checks can still fill result_limit.
+            vector_limit = min(max(result_limit * 3, 10), 50)
             hits = memory_client.vector_store.search(
                 query=query, 
                 vectors=embeddings, 
-                limit=10, 
+                top_k=vector_limit,
                 filters=filters,
             )
-
-            allowed = set(str(mid) for mid in accessible_memory_ids) if accessible_memory_ids else None
 
             results = []
             for h in hits:
                 # All vector db search functions return OutputData class
                 id, score, payload = h.id, h.score, h.payload
-                if allowed and (h.id is None or h.id not in allowed):
+                if h.id is None or str(h.id) not in allowed:
                     continue
-                
+                if score is None or float(score) < score_floor:
+                    continue
+                if resolved_scope and payload.get("scope") != resolved_scope:
+                    continue
+                if resolved_type and payload.get("type") != resolved_type:
+                    continue
+                if resolved_domain and payload.get("domain") != resolved_domain:
+                    continue
+
+                structured_metadata = {
+                    key: payload.get(key)
+                    for key in _STRUCTURED_MEMORY_FIELDS
+                    if payload.get(key)
+                }
                 results.append({
                     "id": id, 
                     "memory": payload.get("data"), 
@@ -199,7 +286,10 @@ async def search_memory(query: str) -> str:
                     "created_at": payload.get("created_at"), 
                     "updated_at": payload.get("updated_at"), 
                     "score": score,
+                    "metadata": structured_metadata,
                 })
+                if len(results) >= result_limit:
+                    break
 
             for r in results: 
                 if r.get("id"): 
