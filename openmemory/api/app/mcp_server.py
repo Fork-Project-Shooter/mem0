@@ -59,7 +59,7 @@ client_name_var: contextvars.ContextVar[str] = contextvars.ContextVar("client_na
 _MEMORY_METADATA_RE = re.compile(
     r"(?mi)^(scope|type|domain):\s*([^\r\n]+?)\s*$"
 )
-_PROJECT_SCOPE_RE = re.compile(r"(project:[A-Za-z0-9_.-]+)")
+_PROJECT_SCOPE_RE = re.compile(r"(project:[A-Za-z0-9_.:-]+)")
 _STRUCTURED_MEMORY_FIELDS = ("scope", "type", "domain")
 
 

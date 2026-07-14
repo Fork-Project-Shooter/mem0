@@ -124,6 +124,10 @@ def test_scope_is_inferred_from_query():
     assert server._resolve_search_scope(
         "anything", " project:explicit "
     ) == "project:explicit"
+    assert server._resolve_search_scope(
+        "project:vlab-frontend:architecture package boundary",
+        None,
+    ) == "project:vlab-frontend:architecture"
 
 
 @pytest.mark.asyncio
