@@ -6,6 +6,7 @@ tools/call — as well as error handling and context-variable isolation.
 """
 
 import os
+from unittest.mock import MagicMock
 
 # Set dummy keys before any imports that trigger client initialization
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
@@ -194,6 +195,34 @@ class TestStreamableHTTPProtocol:
         )
         for tool in resp.json()["result"]["tools"]:
             assert "inputSchema" in tool, f"Tool {tool['name']} missing inputSchema"
+
+    @pytest.mark.asyncio
+    async def test_list_memories_uses_mem0_v2_filters(self, monkeypatch):
+        """list_memories should pass entity IDs through the filters argument."""
+        import app.mcp_server as mcp_server_module
+
+        memory_client = MagicMock()
+        memory_client.get_all.return_value = {"results": []}
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = []
+        user = MagicMock(id="user-record-id")
+        app = MagicMock(id="app-record-id")
+
+        monkeypatch.setattr(mcp_server_module, "get_memory_client_safe", lambda: memory_client)
+        monkeypatch.setattr(mcp_server_module, "SessionLocal", lambda: db)
+        monkeypatch.setattr(mcp_server_module, "get_user_and_app", lambda *args, **kwargs: (user, app))
+
+        user_token = user_id_var.set("user1")
+        client_token = client_name_var.set("testclient")
+        try:
+            result = await mcp._tool_manager._tools["list_memories"].fn()
+        finally:
+            user_id_var.reset(user_token)
+            client_name_var.reset(client_token)
+
+        assert result == "[]"
+        memory_client.get_all.assert_called_once_with(filters={"user_id": "user1"})
+        db.close.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_call_unknown_tool_returns_error(self, client):
